@@ -2,12 +2,10 @@ package service;
 
 import model.Schedule;
 import model.Ship;
-import utils.Constants;
-import utils.Utils;
+import utils.Constants.Date;
 
 import java.util.LinkedList;
-import java.util.concurrent.atomic.AtomicInteger;
-import utils.Constants.Date;
+
 import static utils.Utils.generateInt;
 
 public class Service1 {

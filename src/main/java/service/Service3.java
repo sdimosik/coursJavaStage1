@@ -1,10 +1,12 @@
 package service;
 
 import com.google.gson.Gson;
+import model.Crane;
 import model.Report;
 import model.Schedule;
 import model.Ship;
 import model.Ship.TYPES_CARGO;
+import utils.Constants;
 import utils.Constants.Date;
 import utils.Constants.DateDetail;
 
@@ -14,8 +16,7 @@ import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
-import java.util.concurrent.BrokenBarrierException;
-import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Phaser;
 
 import static utils.Constants.CRANE_COAST;
 import static utils.Constants.JSON_PATH;
@@ -64,10 +65,10 @@ public class Service3 {
     private int countSumLengthQueue = 0;
     private int maxLengthQueue = 0;
 
-    private final ArrayList<List<Worker>> pool = new ArrayList<>(3);
+    private final ArrayList<List<Crane>> pool = new ArrayList<>(3);
     private final ArrayList<Queue<Ship>> queue = new ArrayList<>(3);
     private final ArrayList<LinkedList<Ship>> shipWorking = new ArrayList<>(3);
-    private CyclicBarrier barrierStart;
+    private Phaser phaser;
 
     public TYPES_RETURN run() {
         readSchedule();
@@ -99,27 +100,20 @@ public class Service3 {
             fillSetting(countCrane);
             Schedule schedule = new Schedule(scheduleStock.getList());
             TYPES_EXIT result = calculate(schedule);
+            System.out.println(result);
 
-            if (result == TYPES_EXIT.ERROR) {
-                System.out.println("----------------------ERROR----------------------");
-                break;
-            } else if (result == TYPES_EXIT.ADD_CRANE_LOOSE) {
-                System.out.println("----------------------ADD_CRANE_LOOSE----------------------");
-                countCrane.set(result.getValue(), countCrane.get(result.getValue()) + 1);
-            } else if (result == TYPES_EXIT.ADD_CRANE_LIQUID) {
-                System.out.println("----------------------ADD_CRANE_LIQUID----------------------");
-                countCrane.set(result.getValue(), countCrane.get(result.getValue()) + 1);
-            } else if (result == TYPES_EXIT.ADD_CRANE_CONTAINER) {
-                System.out.println("----------------------ADD_CRANE_CONTAINER----------------------");
-                countCrane.set(result.getValue(), countCrane.get(result.getValue()) + 1);
-            } else if (result == TYPES_EXIT.GOOD) {
-                System.out.println("----------------------GOOD----------------------");
-                Report r = calculateAndGetReport(countCrane);
-                System.out.println(r);
-                return TYPES_RETURN.GOOD;
+            switch (result) {
+                case ERROR:
+                    return TYPES_RETURN.ERROR;
+                case GOOD:
+                    System.out.println(calculateAndGetReport(countCrane));
+                    return TYPES_RETURN.GOOD;
+                case ADD_CRANE_LIQUID:
+                case ADD_CRANE_LOOSE:
+                case ADD_CRANE_CONTAINER:
+                    countCrane.set(result.getValue(), countCrane.get(result.getValue()) + 1);
             }
         }
-        return TYPES_RETURN.ERROR;
     }
 
     Report calculateAndGetReport(ArrayList<Integer> countCrane) {
@@ -159,9 +153,6 @@ public class Service3 {
     TYPES_EXIT calculate(Schedule schedule) {
         for (int daysLeft = -8; daysLeft < Integer.MAX_VALUE; daysLeft++) {
             for (int minutesLeft = 0; minutesLeft < 1440; minutesLeft++) {
-               /* System.out.println("QUEUE size: " + queue.size());
-                System.out.println("WORKING size: " + shipWorking.size());
-                System.out.println("TAX sum: " + tax);*/
                 if (calculateTax(TYPES_CARGO.LOOSE)) {
                     clear(true);
                     return TYPES_EXIT.ADD_CRANE_LOOSE;
@@ -174,56 +165,50 @@ public class Service3 {
                 }
 
 
-                if (zeroingShip(schedule)) {
-                    System.out.println("Pool size: " + pool.size());
-                    System.out.println("Tax sum: " + tax);
-                    System.out.println("Day: " + daysLeft);
-                    System.out.println("Min: " + minutesLeft);
+                if (zeroingShip(schedule, daysLeft, minutesLeft)) {
                     clear(false);
                     return TYPES_EXIT.GOOD;
                 }
 
                 addShipQueue(schedule, daysLeft, minutesLeft);
                 clearNullQueueWorking();
-                for (int type = 0; type < 3; type++) {
-                    for (Worker worker : pool.get(type)) {
-                        if (worker.isFree()) {
-                            if (!shipWorking.get(type).isEmpty()) {
-                                synchronized (shipWorking.get(type).peek()) {
-                                    Ship ship = shipWorking.get(type).getLast();
-                                    shipWorking.get(type).remove(shipWorking.get(type).size() - 1);
-                                    worker.setItem(ship, daysLeft, minutesLeft);
-                                }
-                            } else if (queue.get(type).peek() != null) {
-                                Ship ship = queue.get(type).poll();
-                                shipWorking.get(type).offerFirst(ship);
-                                worker.setItem(ship, daysLeft, minutesLeft);
-                            }
-                        }
-                    }
-                }
+                distributionShip(daysLeft, minutesLeft);
+                calculateSomeStatistic();
 
-                for (int type = 0; type < 3; type++) {
-                    if (queue.get(type).size() > maxLengthQueue) {
-                        maxLengthQueue = queue.get(type).size();
+                phaser.arriveAndAwaitAdvance();
+            }
+        }
+        return TYPES_EXIT.ERROR;
+    }
+
+    private void calculateSomeStatistic() {
+        for (int type = 0; type < 3; type++) {
+            if (queue.get(type).size() > maxLengthQueue) {
+                maxLengthQueue = queue.get(type).size();
+            }
+            sumLengthQueue += queue.size();
+            countSumLengthQueue++;
+        }
+    }
+
+    private void distributionShip(int daysLeft, int minutesLeft) {
+        for (int type = 0; type < 3; type++) {
+            for (Crane crane : pool.get(type)) {
+                if (crane.isFree()) {
+                    if (!shipWorking.get(type).isEmpty()) {
+                        synchronized (shipWorking.get(type).peek()) {
+                            Ship ship = shipWorking.get(type).getLast();
+                            shipWorking.get(type).remove(shipWorking.get(type).size() - 1);
+                            crane.setItem(ship, daysLeft, minutesLeft);
+                        }
+                    } else if (queue.get(type).peek() != null) {
+                        Ship ship = queue.get(type).poll();
+                        shipWorking.get(type).offerFirst(ship);
+                        crane.setItem(ship, daysLeft, minutesLeft);
                     }
-                    sumLengthQueue += queue.size();
-                    countSumLengthQueue++;
-                }
-                try {
-                    barrierStart.await();
-                } catch (InterruptedException | BrokenBarrierException e) {
-                    e.printStackTrace();
                 }
             }
-          /*  System.out.println("------------------(" + daysLeft + ")------------------");
-            System.out.println("Pool size: " + pool.size());
-            System.out.println("TAX sum: " + tax);*/
-            //System.out.println("QUEUE: " + queue);
-            //System.out.println(schedule);
         }
-        clear(true);
-        return TYPES_EXIT.ERROR;
     }
 
     private void clearNullQueueWorking() {
@@ -237,17 +222,6 @@ public class Service3 {
     }
 
     private void clear(boolean isAllClear) {
-
-
-        System.out.println("Waiting: " + barrierStart.getNumberWaiting());
-        System.out.println("Part: " + barrierStart.getParties());
-        try {
-            barrierStart.await();
-        } catch (InterruptedException | BrokenBarrierException e) {
-            e.printStackTrace();
-        }
-
-
         for (int type = 0; type < 3; type++) {
             for (int i = 0; i < pool.get(type).size(); i++) {
                 synchronized (pool.get(type).get(i)) {
@@ -255,6 +229,7 @@ public class Service3 {
                 }
             }
         }
+        phaser.arriveAndAwaitAdvance();
 
 
         for (int type = 0; type < 3; type++) {
@@ -286,11 +261,20 @@ public class Service3 {
         return sum >= CRANE_COAST;
     }
 
-    private boolean zeroingShip(Schedule schedule) {
+    private boolean zeroingShip(Schedule schedule, int daysLeft, int minutesLeft) {
         for (int i = 0; i < schedule.getList().size(); i++) {
             synchronized (schedule.getList().get(i)) {
                 if (schedule.getList().get(i) != null) {
                     if (schedule.getList().get(i).isEmpty()) {
+                        Constants.Date startTime = schedule.getList().get(i).getUploadStart();
+                        int d = Math.abs(daysLeft - startTime.getDays());
+                        int m = minutesLeft - startTime.getMinutes();
+
+                        if (d > 0) {
+                            m += 1440 ;
+                        }
+
+                        schedule.getList().get(i).setUploadTime(new Date(d, m));
                         report.add(schedule.getList().get(i));
                         schedule.getList().remove(i);
                     }
@@ -325,89 +309,21 @@ public class Service3 {
     }
 
     private void fillSetting(ArrayList<Integer> countCrane) {
-        barrierStart = new CyclicBarrier(countCrane.get(0) + countCrane.get(1) + countCrane.get(2) + 1);
+        phaser = new Phaser(1);
         for (int type = 0; type < 3; type++) {
             for (int i = 0; i < countCrane.get(type); i++) {
-                Worker w = new Worker(barrierStart);
+                Crane w = new Crane(phaser);
                 pool.get(type).add(w);
             }
         }
     }
 
-    private void addShipQueue(Schedule schedule, int day, int minutes) {
+    private void addShipQueue(Schedule schedule, int daysLeft, int minutesLeft) {
         for (int i = 0; i < schedule.getList().size(); i++) {
             synchronized (schedule.getList().get(i)) {
-                if (schedule.getList().get(i).getArrivalTime().equals(new Date(day, minutes))) {
+                if (schedule.getList().get(i).getArrivalTime().equals(new Date(daysLeft, minutesLeft))) {
                     TYPES_CARGO type = schedule.getList().get(i).getType();
                     queue.get(type.getValue()).offer(schedule.getList().get(i));
-                }
-            }
-        }
-    }
-
-    private static class Worker extends Thread {
-        private final CyclicBarrier start;
-        private boolean isWorking = true;
-        private Ship item = null;
-        private int days;
-        private int minutes;
-        private boolean startUnload = false;
-
-        public Worker(CyclicBarrier start) {
-            this.start = start;
-            //this.setDaemon(true);
-            this.start();
-        }
-
-        public void setItem(Ship item, int day, int minutes) {
-            this.item = item;
-            this.days = day;
-            this.minutes = minutes;
-            startUnload = true;
-        }
-
-        public void kill() {
-            isWorking = false;
-        }
-
-        public Ship getItem() {
-            return item;
-        }
-
-        public boolean isFree() {
-            return item == null;
-        }
-
-        @Override
-        public void run() {
-            while (isWorking) {
-                if (item != null) {
-                    synchronized (item) {
-                        if (item.isEmpty()) {
-                            item = null;
-                        } else {
-                            if (startUnload) {
-                                startUnload = false;
-                                item.setUploadStart(new Date(days, minutes));
-                            }
-
-                            item.setQuantity(item.getQuantity() - 1);
-                            if (item.isEmpty()) {
-                                Date t = item.getUploadStart();
-                                item.setUploadTime(
-                                    new Date(days - t.getDays(), minutes - t.getMinutes()));
-                                item = null;
-                            }
-                        }
-                    }
-                    days++;
-                    minutes++;
-                }
-
-                try {
-                    start.await();
-                } catch (InterruptedException | BrokenBarrierException e) {
-                    e.printStackTrace();
                 }
             }
         }

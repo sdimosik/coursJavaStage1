@@ -3,7 +3,7 @@ package utils;
 import lombok.Data;
 
 public class Constants {
-    public static final String JSON_PATH = "src\\main\\java\\json\\json";
+    public static final String JSON_PATH = "src\\main\\java\\json\\";
 
     public static final int CRANE_COAST = 30000;
 

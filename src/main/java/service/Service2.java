@@ -1,16 +1,14 @@
 package service;
 
 import com.google.gson.Gson;
-import model.Report;
 import model.Schedule;
 import model.Ship;
+import utils.Constants.Date;
 
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.Scanner;
-
-import utils.Constants.Date;
 
 import static utils.Constants.JSON_PATH;
 
@@ -23,8 +21,7 @@ public class Service2 {
 
     public void run(int count) {
         schedule = service1.generateSchedule(count);
-        // TODO включить
-        //addingSomeRecords();
+        addingSomeRecords();
         writeScheduleToJson();
         Service3.TYPES_RETURN typesReturn = service3.run();
     }
@@ -51,7 +48,7 @@ public class Service2 {
             System.out.print("Type cargo (CONTAINER(0)/LIQUID(1)/LOOSE(2)). ONLY INTEGER");
             int pos;
             do {
-                System.out.println("Enter pos: ");
+                System.out.println("Enter type: ");
                 pos = in.nextInt();
             } while (pos < 0 || pos > 2);
 
@@ -90,11 +87,8 @@ public class Service2 {
         String scheduleJson = gson.toJson(schedule);
         try {
             File f = new File(JSON_PATH + "schedule.json");
-            if (f.isFile()) {
-                if (f.delete()) {
-                } else {
-                    System.out.println("schedule.json not updated. Some error");
-                }
+            if (f.isFile() && !f.delete()) {
+                System.out.println("schedule.json not updated. Some error");
             }
             FileWriter file = new FileWriter(JSON_PATH + "schedule.json");
             file.write(scheduleJson);
